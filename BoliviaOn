@@ -1,0 +1,131 @@
+--[[
+    ██████╗  ██████╗ ██╗     ██╗██╗   ██╗██╗ █████╗      ██████╗ ███╗   ██╗
+    ██╔══██╗██╔═══██╗██║     ██║██║   ██║██║██╔══██╗    ██╔═══██╗████╗  ██║
+    ██████╔╝██║   ██║██║     ██║██║   ██║██║███████║    ██║   ██║██╔██╗ ██║
+    ██╔══██╗██║   ██║██║     ██║╚██╗ ██╔╝██║██╔══██║    ██║   ██║██║╚██╗██║
+    ██████╔╝╚██████╔╝███████╗██║ ╚████╔╝ ██║██║  ██║    ╚██████╔╝██║ ╚████║
+    ╚═════╝  ╚═════╝ ╚══════╝╚═╝  ╚═══╝  ╚═╝╚═╝  ╚═╝     ╚═════╝ ╚═╝  ╚═══╝
+              PVP SUITE · mobile / Delta · licenciado
+]]
+
+if getgenv().BoliviaOn_Cleanup then pcall(getgenv().BoliviaOn_Cleanup) end
+getgenv().BoliviaOn_Loaded = true
+
+local Players     = game:GetService("Players")
+local RunService  = game:GetService("RunService")
+local UIS         = game:GetService("UserInputService")
+local VirtualUser = game:GetService("VirtualUser")
+local Tween       = game:GetService("TweenService")
+local Http        = game:GetService("HttpService")
+local WS          = game.Workspace
+local Lighting    = game:GetService("Lighting")
+local LP          = Players.LocalPlayer
+
+local Camera = WS.CurrentCamera
+WS:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+    if WS.CurrentCamera then Camera = WS.CurrentCamera end
+end)
+
+--=====================================================================
+--  ⚠  CONFIGURAÇÃO — EDITE SÓ ESTE BLOCO
+--=====================================================================
+
+-- 1) Seu UserId aqui (entra como dono sem pedir key)
+--    rode no executor para descobrir:  print(game.Players.LocalPlayer.UserId)
+local OWNER_IDS = {
+    -- 123456789,
+}
+
+-- 2) Key mestra de dono (funciona em qualquer aparelho, sem vínculo)
+local OWNER_KEY = "BOLIVIA-DONO-0001"
+
+-- 3) Suas keys — cole as linhas que o gerador imprime
+--    formato:  ["hash"] = { expires = nil }        (nil = vitalícia)
+--    formato:  ["hash"] = { expires = "2026-12-31" } (expira no dia)
+local KEYS = {
+    -- ["00000000"] = { expires = nil },
+}
+
+-- 4) Lista remota opcional (raw de um gist com o JSON das KEYS, ou "")
+local REMOTE_URL = ""
+
+--=====================================================================
+
+local SALT = "BoliviaOn::2026"
+
+local function hash(str)
+    local h = 5381
+    for i = 1, #str do
+        h = (h * 33 + string.byte(str, i) + #SALT) % 4294967296
+    end
+    return string.format("%08x", h)
+end
+
+local function trim(s) return (s:gsub("^%s*(.-)%s*$", "%1")) end
+
+local function getHWID()
+    local hw
+    pcall(function() hw = gethwid() end)
+    if not hw then pcall(function() hw = game:GetService("RbxAnalyticsService"):GetClientId() end) end
+    if not hw then hw = "user-" .. tostring(LP.UserId) end
+    return hash(hw):upper()
+end
+
+local HWID = getHWID()
+
+local function expired(exp)
+    if not exp then return false end
+    local y, m, d = string.match(exp, "^(%d+)-(%d+)-(%d+)$")
+    if not y then return false end
+    local ok, now = pcall(os.time)
+    if not ok then return false end
+    local ok2, t = pcall(function()
+        return os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 23 })
+    end)
+    if not ok2 then return false end
+    return now > t
+end
+
+local function loadBinds()
+    if not (isfile and readfile) or not isfile("BoliviaOn_binds.json") then return {} end
+    local ok, d = pcall(function() return Http:JSONDecode(readfile("BoliviaOn_binds.json")) end)
+    return (ok and type(d) == "table") and d or {}
+end
+local function saveBind(h, id)
+    if not writefile then return end
+    local b = loadBinds()
+    b[h] = id
+    pcall(function() writefile("BoliviaOn_binds.json", Http:JSONEncode(b)) end)
+end
+
+local function fetchRemote()
+    if REMOTE_URL == "" then return end
+    local ok, body = pcall(function()
+        if syn and syn.request then
+            local r = syn.request({ Url = REMOTE_URL, Method = "GET" })
+            return r and r.Body
+        elseif request then
+            local r = request({ Url = REMOTE_URL, Method = "GET" })
+            return r and r.Body
+        else
+            return HttpGet(REMOTE_URL)
+        end
+    end)
+    if not ok or type(body) ~= "string" then return end
+    local ok2, data = pcall(function() return Http:JSONDecode(body) end)
+    if ok2 and type(data) == "table" then
+        for k, v in pairs(data) do
+            if KEYS[k] == nil then KEYS[k] = v end
+        end
+    end
+end
+
+local function validate(rawKey)
+    local key = string.upper(trim(rawKey))
+    if key == "" then return false, "digite uma key" end
+    if key == string.upper(OWNER_KEY) then return true, key end
+    local h = hash(key)
+    local entry = KEYS[h]
+    if not entry then return false, "key inválida" end
+    if expired(entry.expires) then return false, "key expirada" end
+    local binds =
